@@ -32,7 +32,12 @@ declare module "fastify" {
  * the users table — it was deliberately omitted here since there's no Firebase
  * project to key against yet).
  */
-function verifyToken(token: string): AuthContext {
+// Exported (not just used internally by requireAuth) so the rate-limit
+// plugin's keyGenerator (app.ts) can decode the token for per-user limiting
+// — that hook runs ahead of every route's requireAuth preHandler, so it
+// can't rely on req.auth being set yet and needs to do this same decode
+// itself.
+export function verifyToken(token: string): AuthContext {
   const payload = jwt.verify(token, env.JWT_SECRET) as { sub: string; role: UserRole };
   return { userId: payload.sub, role: payload.role };
 }

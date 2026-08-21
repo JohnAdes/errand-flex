@@ -1,7 +1,9 @@
+import type { FastifyRequest } from "fastify";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { env } from "./env";
+import { verifyToken } from "./middleware/auth";
 import { registerErrorHandler } from "./middleware/errorHandler";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { pricingRoutes } from "./modules/pricing/pricing.routes";
@@ -30,14 +32,33 @@ export function buildApp() {
 
   // Gateway-level rate limiting (02-architecture.md §11: "per-user and
   // per-IP limits at the gateway, stricter on auth, offer-accept, and
-  // location endpoints"). This registers the per-IP half — individual
-  // routes below override with stricter limits via `config.rateLimit`.
-  // Per-user limiting would need the JWT decoded before this plugin's
-  // `onRequest` hook runs (ahead of each route's `requireAuth` preHandler),
-  // which is a reasonable next increment, not implemented here.
+  // location endpoints"). keyGenerator decodes the JWT itself — this
+  // plugin's `onRequest` hook runs ahead of every route's `requireAuth`
+  // preHandler, so req.auth isn't set yet — and buckets authenticated
+  // requests per-user instead of per-IP, so e.g. several drivers behind the
+  // same NAT no longer share one limit, while unauthenticated requests
+  // (login, an invalid/expired token) still fall back to per-IP, which is
+  // exactly what's wanted for the stricter auth-endpoint override below
+  // (brute-force protection has no user identity to key on before login
+  // succeeds). Every per-route override (auth/offer-accept/location-ping)
+  // inherits this same keyGenerator unless it sets its own.
+  function rateLimitKey(req: FastifyRequest): string {
+    const header = req.headers.authorization;
+    if (header?.startsWith("Bearer ")) {
+      try {
+        return `user:${verifyToken(header.slice("Bearer ".length)).userId}`;
+      } catch {
+        // Invalid/expired token — fall through to the IP-based key below;
+        // requireAuth (running later, per-route) is what actually rejects it.
+      }
+    }
+    return `ip:${req.ip}`;
+  }
+
   app.register(rateLimit, {
     max: 300,
     timeWindow: "1 minute",
+    keyGenerator: rateLimitKey,
   });
 
   registerErrorHandler(app);
