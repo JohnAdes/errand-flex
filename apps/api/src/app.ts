@@ -3,7 +3,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { env } from "./env";
-import { verifyToken } from "./middleware/auth";
+import { extractRateLimitUserId } from "./middleware/auth";
 import { registerErrorHandler } from "./middleware/errorHandler";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { pricingRoutes } from "./modules/pricing/pricing.routes";
@@ -16,6 +16,7 @@ import { paymentsRoutes } from "./modules/payments/payments.routes";
 import { trackingRoutes } from "./modules/tracking/tracking.routes";
 import { claimsRoutes } from "./modules/claims/claims.routes";
 import { ratingsRoutes } from "./modules/ratings/ratings.routes";
+import { storageRoutes } from "./modules/storage/storage.routes";
 
 export function buildApp() {
   const app = Fastify({
@@ -45,12 +46,8 @@ export function buildApp() {
   function rateLimitKey(req: FastifyRequest): string {
     const header = req.headers.authorization;
     if (header?.startsWith("Bearer ")) {
-      try {
-        return `user:${verifyToken(header.slice("Bearer ".length)).userId}`;
-      } catch {
-        // Invalid/expired token — fall through to the IP-based key below;
-        // requireAuth (running later, per-route) is what actually rejects it.
-      }
+      const userId = extractRateLimitUserId(header.slice("Bearer ".length));
+      if (userId) return `user:${userId}`;
     }
     return `ip:${req.ip}`;
   }
@@ -86,6 +83,7 @@ export function buildApp() {
   app.register(trackingRoutes);
   app.register(claimsRoutes);
   app.register(ratingsRoutes);
+  app.register(storageRoutes);
 
   return app;
 }

@@ -93,11 +93,23 @@ export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   email: varchar("email", { length: 255 }).notNull().unique(),
   phone: varchar("phone", { length: 32 }).unique(),
-  passwordHash: text("password_hash").notNull(),
+  // Nullable because a Firebase-authenticated user (AUTH_PROVIDER=firebase,
+  // see middleware/auth.ts) has no local password at all — Firebase is the
+  // credential source of truth for that row, identified by firebaseUid.
+  passwordHash: text("password_hash"),
+  // Links this row to a Firebase Auth UID once AUTH_PROVIDER=firebase is
+  // active (auth.service.ts's linkFirebaseAccount). Null for every row
+  // created under the default local-JWT auth scheme.
+  firebaseUid: varchar("firebase_uid", { length: 128 }).unique(),
   role: userRoleEnum("role").notNull(),
   status: userStatusEnum("status").notNull().default("ACTIVE"),
   emailVerified: boolean("email_verified").notNull().default(false),
   phoneVerified: boolean("phone_verified").notNull().default(false),
+  // Set by auth.service.ts's sendPhoneVerificationCode / confirmPhoneVerificationCode
+  // (SMS OTP flow, see modules/notifications/sms.provider.ts) — never
+  // exposed outside the auth module, and cleared once used or expired.
+  phoneVerificationCodeHash: text("phone_verification_code_hash"),
+  phoneVerificationExpiresAt: timestamp("phone_verification_expires_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -27,7 +27,7 @@ export async function authorizePayment(orderId: string, actorUserId: string) {
   const existing = await db.query.payments.findFirst({ where: eq(schema.payments.orderId, orderId) });
   if (existing) throw new ConflictError("Payment already authorized for this order");
 
-  const { providerRef } = await paymentProvider.authorize({
+  const { providerRef, clientSecret } = await paymentProvider.authorize({
     amountCents: order.totalCents,
     currency: order.currency,
     customerRef: order.customerProfileId,
@@ -54,7 +54,12 @@ export async function authorizePayment(orderId: string, actorUserId: string) {
   // Advances AWAITING_PAYMENT -> SCHEDULED -> SEARCHING_FOR_DRIVER.
   await markPaymentAuthorizedAndSchedule(orderId);
 
-  return payment;
+  // clientSecret is not persisted (Stripe client secrets are meant to be
+  // used once, client-side, right after creation, not stored) — it's only
+  // present when StripePaymentProvider is active (payment.provider.ts) and
+  // is what a real client-side Stripe SDK integration would need to
+  // complete card confirmation. MockPaymentProvider never sets it.
+  return { ...payment, clientSecret };
 }
 
 async function totalRefundedCents(dbOrTx: DbOrTx, paymentId: string): Promise<number> {

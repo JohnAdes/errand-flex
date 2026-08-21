@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { requireAuth } from "../../middleware/auth";
 import * as authService from "./auth.service";
 
 const registerCustomerSchema = z.object({
@@ -18,6 +19,13 @@ const registerDriverSchema = z.object({
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
+});
+
+const linkFirebaseSchema = z.object({
+  idToken: z.string().min(1),
+  role: z.enum(["CUSTOMER", "DRIVER"]),
+  displayName: z.string().min(1).optional(),
+  phone: z.string().optional(),
 });
 
 // Stricter than the app-wide default (app.ts) — auth endpoints are the
@@ -46,8 +54,30 @@ export async function authRoutes(app: FastifyInstance) {
     reply.status(200).send(session);
   });
 
-  // NOTE: /v1/auth/verify-phone (OTP send + confirm) is in the API spec but not
-  // implemented here — it requires a real SMS provider (Twilio) account. The route
-  // shape/contract is documented in 02-architecture.md §6; wire it up the same way
-  // as any other module here once you have Twilio credentials.
+  // POST /v1/auth/link-firebase-account — only meaningful once
+  // AUTH_PROVIDER=firebase is active (env.ts); see auth.service.ts's
+  // linkFirebaseAccount for the full flow. Rate-limited the same as
+  // register/login since, like them, it's callable by anyone with an
+  // arbitrary (if Firebase-verified) identity.
+  app.post("/v1/auth/link-firebase-account", authRateLimit, async (req, reply) => {
+    const body = linkFirebaseSchema.parse(req.body);
+    const result = await authService.linkFirebaseAccount(body);
+    reply.status(200).send(result);
+  });
+
+  // POST /v1/auth/verify-phone/send and /confirm — the OTP flow the API
+  // spec documents (02-architecture.md §6) but this codebase previously left
+  // unimplemented for lack of an SMS provider (see modules/notifications/sms.provider.ts).
+  // Same rate limit as login/register: brute-forcing a 6-digit code is
+  // exactly the kind of thing this limit exists to slow down.
+  app.post("/v1/auth/verify-phone/send", { preHandler: [requireAuth], ...authRateLimit }, async (req, reply) => {
+    const result = await authService.sendPhoneVerificationCode(req.auth!.userId);
+    reply.status(200).send(result);
+  });
+
+  app.post("/v1/auth/verify-phone/confirm", { preHandler: [requireAuth], ...authRateLimit }, async (req, reply) => {
+    const body = z.object({ code: z.string().length(6) }).parse(req.body);
+    const result = await authService.confirmPhoneVerificationCode(req.auth!.userId, body.code);
+    reply.status(200).send(result);
+  });
 }

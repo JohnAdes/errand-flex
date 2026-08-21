@@ -87,7 +87,7 @@ export async function listDriversForReview() {
   }));
 }
 
-function sanitizeUser<T extends { passwordHash?: string }>(user: T): Omit<T, "passwordHash"> {
+function sanitizeUser<T extends { passwordHash?: string | null }>(user: T): Omit<T, "passwordHash"> {
   const { passwordHash, ...safe } = user;
   return safe;
 }
