@@ -57,7 +57,21 @@ export async function startJobScheduler() {
             throw new Error(`Unknown scheduled job: ${job.name}`);
         }
       },
-      { connection }
+      // Explicit concurrency: 1 (this is BullMQ's own default, made explicit
+      // here rather than left implicit) — within this single worker process,
+      // jobs are processed one at a time, so a run that takes longer than
+      // its own interval queues behind the current one instead of running
+      // in parallel with it. Found by review: this guarantee does NOT extend
+      // across multiple API instances — if this is ever horizontally scaled,
+      // each instance's own Worker would compete for the same queue, and a
+      // slow run on one instance could overlap with the next occurrence
+      // picked up by another. BullMQ's own atomic job-claiming already
+      // prevents the same job entry from being double-processed, but nothing
+      // here yet stops two different occurrences of the same repeatable job
+      // from running concurrently on different instances — a real
+      // distributed lock (e.g. a Redis SET NX per job name) would be needed
+      // for that, out of scope for this pass.
+      { connection, concurrency: 1 }
     );
     worker.on("failed", (job, err) => {
       console.error(`[jobs] "${job?.name}" failed:`, err instanceof Error ? err.message : err);

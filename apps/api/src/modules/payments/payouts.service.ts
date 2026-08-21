@@ -54,10 +54,9 @@ export async function runPayoutBatch(driverId: string, periodStart: Date, period
       .returning();
 
     await recordAudit(tx, {
-      // audit_logs.actor_id is a real users.id FK — "system:" pseudo-actors
-      // (the scheduled job) aren't UUIDs; same normalization used throughout
-      // (see orders.service.ts's transitionOrder, payments.service.ts's issueRefund).
-      actorId: actorUserId.startsWith("system:") ? null : actorUserId,
+      // Pseudo-actors ("system:...") are normalized to a null actor inside
+      // recordAudit itself.
+      actorId: actorUserId,
       action: "PAYOUT_RUN",
       entityType: "Payout",
       entityId: payout.id,

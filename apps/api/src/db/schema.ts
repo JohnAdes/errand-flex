@@ -435,6 +435,11 @@ export const refunds = pgTable("refunds", {
   amountCents: integer("amount_cents").notNull(),
   reason: text("reason").notNull(),
   issuedBy: varchar("issued_by", { length: 255 }).notNull(),
+  // The refund provider's own reference (PaymentProvider.refund's
+  // providerRefundRef — see payment.provider.ts) — previously computed and
+  // discarded, so reconciling a refund row against a real Stripe refund
+  // object was impossible once a real provider is wired up.
+  providerRefundRef: varchar("provider_refund_ref", { length: 255 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

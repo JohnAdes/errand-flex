@@ -3,14 +3,13 @@ import { z } from "zod";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { requireAuth } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
+import { OPS_ROLES as opsRoles, DISPATCH_ROLES as dispatchRoles } from "../../lib/roleGroups";
 import { db, schema } from "../../db";
 import * as driversService from "../drivers/drivers.service";
 import * as pricingService from "../pricing/pricing.service";
 import * as businessService from "../business/business.service";
 
 export async function adminRoutes(app: FastifyInstance) {
-  const opsRoles = ["OPS_MANAGER", "SUPER_ADMIN"] as const;
-  const dispatchRoles = ["DISPATCHER", "OPS_MANAGER", "SUPER_ADMIN"] as const;
 
   // GET /v1/admin/drivers/pending
   app.get(

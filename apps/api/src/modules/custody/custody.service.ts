@@ -95,17 +95,19 @@ export async function verifyPickup(input: PickupVerifyInput) {
       })
       .returning();
 
-    for (const pkg of order.packages) {
-      await tx.insert(schema.chainOfCustodyEvents).values({
+    // One batched insert instead of a per-package round-trip — same
+    // pattern orders.service.ts's createOrder already uses for stops.
+    await tx.insert(schema.chainOfCustodyEvents).values(
+      order.packages.map((pkg) => ({
         packageId: pkg.id,
         orderId: order.id,
-        eventType: "PICKUP_VERIFIED",
+        eventType: "PICKUP_VERIFIED" as const,
         actorDriverId: input.driverId,
         geoLat: input.driverLat,
         geoLng: input.driverLng,
         deviceId: input.deviceId,
-      });
-    }
+      }))
+    );
 
     await recordAudit(tx, {
       actorId: null,
@@ -198,16 +200,18 @@ export async function verifyDelivery(input: DeliveryVerifyInput) {
       })
       .returning();
 
-    for (const pkg of order.packages) {
-      await tx.insert(schema.chainOfCustodyEvents).values({
+    // One batched insert instead of a per-package round-trip.
+    const deliveryEventType: "DELIVERY_VERIFIED" | "FAILED" = input.outcome === "DELIVERED" ? "DELIVERY_VERIFIED" : "FAILED";
+    await tx.insert(schema.chainOfCustodyEvents).values(
+      order.packages.map((pkg) => ({
         packageId: pkg.id,
         orderId: order.id,
-        eventType: input.outcome === "DELIVERED" ? "DELIVERY_VERIFIED" : "FAILED",
+        eventType: deliveryEventType,
         actorDriverId: input.driverId,
         geoLat: input.driverLat,
         geoLng: input.driverLng,
-      });
-    }
+      }))
+    );
 
     // Final status write goes through transitionOrder (not a direct update)
     // — same fix as verifyPickup above: keeps this on the state machine's

@@ -1,7 +1,6 @@
 import { and, eq, lt } from "drizzle-orm";
 import { db, schema } from "../db";
-import { transitionOrder } from "../modules/orders/orders.service";
-import { OrderStatus } from "@courier/shared-types";
+import { releaseOrdersToSearching } from "../modules/dispatch/dispatch.service";
 
 /**
  * Offer-expiry sweep (02-architecture.md §7). Previously nothing implemented
@@ -38,14 +37,7 @@ export async function runOfferExpirySweep() {
           ).map((a) => a.orderId)
         : [];
 
-    for (const orderId of orderIds) {
-      const order = await db.query.orders.findFirst({ where: eq(schema.orders.id, orderId) });
-      if (order?.status === "DRIVER_OFFERED") {
-        await transitionOrder(orderId, OrderStatus.SEARCHING_FOR_DRIVER, "system:offer-expiry-sweep", {
-          expiredOfferId: offer.id,
-        });
-      }
-    }
+    await releaseOrdersToSearching(orderIds, "system:offer-expiry-sweep", { expiredOfferId: offer.id });
 
     // A batch offer also claims the batch itself (status: OFFERED, see
     // dispatch.service.ts's createBatchOfferRound) — release it back to

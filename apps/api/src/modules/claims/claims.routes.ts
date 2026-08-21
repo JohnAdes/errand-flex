@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireAuth } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { getDriverId, getCustomerProfileId, assertOrderAccess } from "../../lib/orderAccess";
+import { DISPATCH_ROLES as dispatchRoles } from "../../lib/roleGroups";
 import * as claimsService from "./claims.service";
 
 const createClaimSchema = z.object({
@@ -12,8 +13,6 @@ const createClaimSchema = z.object({
 });
 
 export async function claimsRoutes(app: FastifyInstance) {
-  const dispatchRoles = ["DISPATCHER", "OPS_MANAGER", "SUPER_ADMIN"] as const;
-
   // POST /v1/orders/:id/claims — filed by the customer who owns the order or
   // the driver who carried it.
   app.post(

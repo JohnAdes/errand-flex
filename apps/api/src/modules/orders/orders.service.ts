@@ -91,6 +91,12 @@ export async function createOrder(input: CreateOrderInput) {
         currency: quote.currency,
         deliveryInstructions: input.deliveryInstructions,
         contactlessDelivery: input.contactlessDelivery,
+        // Previously never set — quotes.pricingRuleVersionId was populated
+        // at quote time but never copied onto the order, so anything
+        // querying orders.pricingRuleVersionId directly (rather than joining
+        // through quoteId) always got null, silently losing the "which
+        // pricing-rule version priced this order" audit trail.
+        pricingRuleVersionId: quote.pricingRuleVersionId,
       })
       .returning();
 
@@ -235,7 +241,7 @@ async function doTransitionOrder(
     .returning();
 
   await recordAudit(tx, {
-    actorId: actorId.startsWith("system:") || actorId.startsWith("driver:") ? null : actorId,
+    actorId,
     action: `ORDER_STATUS_${toStatus}`,
     entityType: "Order",
     entityId: orderId,

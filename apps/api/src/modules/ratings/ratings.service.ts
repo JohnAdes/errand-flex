@@ -16,13 +16,15 @@ async function getDriverOrderIds(driverId: string): Promise<string[]> {
     where: and(eq(schema.driverOffers.driverId, driverId), eq(schema.driverOffers.status, "ACCEPTED"), isNotNull(schema.driverOffers.routeBatchId)),
   });
 
-  const batchOrderIds: string[] = [];
-  for (const offer of batchOffers) {
-    const assignments = await db.query.routeAssignments.findMany({
-      where: eq(schema.routeAssignments.routeBatchId, offer.routeBatchId!),
-    });
-    batchOrderIds.push(...assignments.map((a) => a.orderId));
-  }
+  // One batched query instead of the previous per-offer loop.
+  const batchOrderIds =
+    batchOffers.length === 0
+      ? []
+      : (
+          await db.query.routeAssignments.findMany({
+            where: inArray(schema.routeAssignments.routeBatchId, batchOffers.map((o) => o.routeBatchId!)),
+          })
+        ).map((a) => a.orderId);
 
   return [...directOffers.map((o) => o.orderId!), ...batchOrderIds];
 }

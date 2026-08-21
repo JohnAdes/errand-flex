@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { requireAuth } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { requireIdempotencyKey, withIdempotency } from "../../lib/idempotency";
+import { DISPATCH_ROLES as dispatchRoles } from "../../lib/roleGroups";
 import { db, schema } from "../../db";
 import * as dispatchService from "./dispatch.service";
 import * as batchingService from "./batching.service";
@@ -25,8 +26,6 @@ const createBatchOfferSchema = z.object({
 });
 
 export async function dispatchRoutes(app: FastifyInstance) {
-  const dispatchRoles = ["DISPATCHER", "OPS_MANAGER", "SUPER_ADMIN"] as const;
-
   // ---------- Route batching (02-architecture.md §9) ----------
 
   // POST /v1/internal/dispatch/batches/suggest — normally a scheduled

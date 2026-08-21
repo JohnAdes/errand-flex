@@ -22,11 +22,27 @@ export async function recordAudit(
   }
 ) {
   await tx.insert(schema.auditLogs).values({
-    actorId: params.actorId,
+    actorId: normalizeActorId(params.actorId),
     action: params.action,
     entityType: params.entityType,
     entityId: params.entityId,
     before: params.before === undefined ? null : (params.before as any),
     after: params.after === undefined ? null : (params.after as any),
   });
+}
+
+/**
+ * audit_logs.actor_id is a real users.id FK — pseudo-actors like
+ * "system:dispatch" (scheduled jobs, internal processes) or "driver:<id>"
+ * (custody verification, which authenticates a driver but not a `users`
+ * row) aren't UUIDs and would fail that FK constraint, so they're recorded
+ * as a null actor instead. Centralized here after review found this same
+ * check copy-pasted at three separate call sites and already drifted: only
+ * one of the three stripped the "driver:" prefix, the other two only
+ * checked "system:".
+ */
+function normalizeActorId(actorId: string | null): string | null {
+  if (actorId === null) return null;
+  if (actorId.startsWith("system:") || actorId.startsWith("driver:")) return null;
+  return actorId;
 }

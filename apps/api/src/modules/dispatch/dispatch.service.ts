@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { db, schema } from "../../db";
 import { env } from "../../env";
@@ -242,6 +242,26 @@ export async function acceptOffer(offerId: string, driverId: string) {
   return offer;
 }
 
+/**
+ * Puts every DRIVER_OFFERED order among `orderIds` back into
+ * SEARCHING_FOR_DRIVER (a no-op for any order already elsewhere in the
+ * pipeline). Shared by declineOffer's batch branch and
+ * offerExpirySweep.job.ts — both used to do this with a separate
+ * `orders.findFirst` per order in a loop; this batches that read into one
+ * `inArray` query instead (the actual transitionOrder calls still happen
+ * one per order, since each needs its own state-machine validation and
+ * audit row).
+ */
+export async function releaseOrdersToSearching(orderIds: string[], actorId: string, meta: Record<string, unknown>) {
+  if (orderIds.length === 0) return;
+  const orders = await db.query.orders.findMany({ where: inArray(schema.orders.id, orderIds) });
+  for (const order of orders) {
+    if (order.status === "DRIVER_OFFERED") {
+      await transitionOrder(order.id, OrderStatus.SEARCHING_FOR_DRIVER, actorId, meta);
+    }
+  }
+}
+
 export async function declineOffer(offerId: string, driverId: string) {
   const updated = await db
     .update(schema.driverOffers)
@@ -262,20 +282,16 @@ export async function declineOffer(offerId: string, driverId: string) {
   // was permanently orphaned in DRIVER_OFFERED/OFFERED with no way back into
   // the dispatch pool short of manual intervention.
   if (offer.orderId) {
-    const order = await db.query.orders.findFirst({ where: eq(schema.orders.id, offer.orderId) });
-    if (order?.status === "DRIVER_OFFERED") {
-      await transitionOrder(offer.orderId, OrderStatus.SEARCHING_FOR_DRIVER, "system:dispatch", { declinedOfferId: offer.id });
-    }
+    await releaseOrdersToSearching([offer.orderId], "system:dispatch", { declinedOfferId: offer.id });
   } else if (offer.routeBatchId) {
     const assignments = await db.query.routeAssignments.findMany({
       where: eq(schema.routeAssignments.routeBatchId, offer.routeBatchId),
     });
-    for (const assignment of assignments) {
-      const order = await db.query.orders.findFirst({ where: eq(schema.orders.id, assignment.orderId) });
-      if (order?.status === "DRIVER_OFFERED") {
-        await transitionOrder(assignment.orderId, OrderStatus.SEARCHING_FOR_DRIVER, "system:dispatch", { declinedOfferId: offer.id });
-      }
-    }
+    await releaseOrdersToSearching(
+      assignments.map((a) => a.orderId),
+      "system:dispatch",
+      { declinedOfferId: offer.id }
+    );
     await db.update(schema.routeBatches).set({ status: "APPROVED" }).where(eq(schema.routeBatches.id, offer.routeBatchId));
   }
 

@@ -26,25 +26,41 @@ import type { ServiceLevel } from "@courier/shared-types";
  * score/reject a grouping's detour cost before persisting it.
  */
 
-const PICKUP_CLUSTER_RADIUS_KM = 3;
-const DROPOFF_CLUSTER_RADIUS_KM = 6;
-const MAX_BATCH_SIZE = 4;
-const MAX_COMBINED_WEIGHT_KG = 150; // conservative vs. a sedan's ~200kg capacity (see seed.ts), leaves buffer for the driver's own cargo handling
-const MAX_DETOUR_RATIO = 1.6; // batched route length vs. sum of each order's direct pickup->dropoff distance
-// Closes the "grouped routes lower customer prices" pricing-doc claim, which
-// wasn't actually wired to anything: a quote is priced and locked before
-// dispatch ever runs, so there's no way to know at quote time whether an
-// order will end up grouped. Instead of changing an already-charged price
-// (which would break the "quotes never change retroactively" guarantee —
-// see pricing.service.ts), a successful grouping issues a discount/refund
-// against the order's payment, sized as a share of the detour savings the
-// grouping actually produced.
-const GROUP_DISCOUNT_SAVINGS_SHARE = 0.3; // fraction of the detour-ratio savings passed to the customer
-const MAX_GROUP_DISCOUNT_RATE = 0.15; // cap so a very tight grouping can't wipe out platform margin
-// PRIORITY/SCHEDULED orders carry tighter time promises than an MVP proximity-only
-// grouping can safely honor without real time-window/ETA modeling — only group the
-// service levels where a modest shared-route delay is an acceptable tradeoff.
-const GROUPABLE_SERVICE_LEVELS: ServiceLevel[] = ["ECONOMY", "STANDARD"];
+/**
+ * Batching's tuning knobs, grouped into one exported object — unlike
+ * pricing.service.ts's rule set (DB-backed, admin-editable, versioned via
+ * `pricing_rule_versions`), these are still hardcoded: any operational
+ * tuning here needs a code deploy, not an admin-panel edit, and there's no
+ * audited change history. Promoting this to a real DB-backed/admin-editable
+ * rule set (mirroring pricing's pattern) would be a substantial follow-up
+ * feature, not a cleanup — centralizing the constants here at least makes
+ * them one discoverable place to find and reason about together.
+ */
+export const BATCHING_CONFIG = {
+  PICKUP_CLUSTER_RADIUS_KM: 3,
+  DROPOFF_CLUSTER_RADIUS_KM: 6,
+  MAX_BATCH_SIZE: 4,
+  // Conservative vs. a sedan's ~200kg capacity (see seed.ts), leaves buffer
+  // for the driver's own cargo handling.
+  MAX_COMBINED_WEIGHT_KG: 150,
+  // Batched route length vs. sum of each order's direct pickup->dropoff distance.
+  MAX_DETOUR_RATIO: 1.6,
+  // Closes the "grouped routes lower customer prices" pricing-doc claim,
+  // which wasn't actually wired to anything: a quote is priced and locked
+  // before dispatch ever runs, so there's no way to know at quote time
+  // whether an order will end up grouped. Instead of changing an
+  // already-charged price (which would break the "quotes never change
+  // retroactively" guarantee — see pricing.service.ts), a successful
+  // grouping issues a discount/refund against the order's payment, sized as
+  // a share of the detour savings the grouping actually produced.
+  GROUP_DISCOUNT_SAVINGS_SHARE: 0.3, // fraction of the detour-ratio savings passed to the customer
+  MAX_GROUP_DISCOUNT_RATE: 0.15, // cap so a very tight grouping can't wipe out platform margin
+  // PRIORITY/SCHEDULED orders carry tighter time promises than an MVP
+  // proximity-only grouping can safely honor without real time-window/ETA
+  // modeling — only group the service levels where a modest shared-route
+  // delay is an acceptable tradeoff.
+  GROUPABLE_SERVICE_LEVELS: ["ECONOMY", "STANDARD"] as ServiceLevel[],
+};
 
 interface Candidate {
   orderId: string;
@@ -78,7 +94,7 @@ async function getGroupableCandidates(): Promise<Candidate[]> {
 
   const candidates: Candidate[] = [];
   for (const order of orders) {
-    if (!GROUPABLE_SERVICE_LEVELS.includes(order.serviceLevel as ServiceLevel)) continue;
+    if (!BATCHING_CONFIG.GROUPABLE_SERVICE_LEVELS.includes(order.serviceLevel as ServiceLevel)) continue;
     if (order.packages.some((p) => p.confidential)) continue; // exclusivity flag — never grouped
 
     const pickupStop = order.stops.find((s) => s.type === "PICKUP");
@@ -109,13 +125,13 @@ function clusterCandidates(candidates: Candidate[]): Candidate[][] {
 
   for (const candidate of candidates) {
     const cluster = clusters.find((cl) => {
-      if (cl.length >= MAX_BATCH_SIZE) return false;
+      if (cl.length >= BATCHING_CONFIG.MAX_BATCH_SIZE) return false;
       const combinedWeight = cl.reduce((sum, m) => sum + m.weightKg, 0) + candidate.weightKg;
-      if (combinedWeight > MAX_COMBINED_WEIGHT_KG) return false;
+      if (combinedWeight > BATCHING_CONFIG.MAX_COMBINED_WEIGHT_KG) return false;
       return cl.every((m) => {
         const pickupKm = estimateDistanceKm(m.pickup.lat, m.pickup.lng, candidate.pickup.lat, candidate.pickup.lng);
         const dropoffKm = estimateDistanceKm(m.dropoff.lat, m.dropoff.lng, candidate.dropoff.lat, candidate.dropoff.lng);
-        return pickupKm <= PICKUP_CLUSTER_RADIUS_KM && dropoffKm <= DROPOFF_CLUSTER_RADIUS_KM;
+        return pickupKm <= BATCHING_CONFIG.PICKUP_CLUSTER_RADIUS_KM && dropoffKm <= BATCHING_CONFIG.DROPOFF_CLUSTER_RADIUS_KM;
       });
     });
 
@@ -181,10 +197,10 @@ export async function suggestRouteBatches() {
   const created = [];
   for (const cluster of clusters) {
     const { orderedPickups, batchedRouteKm, sumDirectKm, detourRatio } = sequenceRoute(cluster);
-    if (detourRatio > MAX_DETOUR_RATIO) continue;
+    if (detourRatio > BATCHING_CONFIG.MAX_DETOUR_RATIO) continue;
 
     const savingsFraction = Math.max(0, Math.min(1, 1 - detourRatio));
-    const discountRate = Math.min(MAX_GROUP_DISCOUNT_RATE, savingsFraction * GROUP_DISCOUNT_SAVINGS_SHARE);
+    const discountRate = Math.min(BATCHING_CONFIG.MAX_GROUP_DISCOUNT_RATE, savingsFraction * BATCHING_CONFIG.GROUP_DISCOUNT_SAVINGS_SHARE);
 
     const batch = await db.transaction(async (tx) => {
       const [batch] = await tx
@@ -194,9 +210,9 @@ export async function suggestRouteBatches() {
           createdBy: "SYSTEM",
           groupingReason: {
             factors: ["pickup_proximity", "dropoff_proximity", "weight_capacity", "service_level_compatibility"],
-            pickupClusterRadiusKm: PICKUP_CLUSTER_RADIUS_KM,
-            dropoffClusterRadiusKm: DROPOFF_CLUSTER_RADIUS_KM,
-            maxDetourRatio: MAX_DETOUR_RATIO,
+            pickupClusterRadiusKm: BATCHING_CONFIG.PICKUP_CLUSTER_RADIUS_KM,
+            dropoffClusterRadiusKm: BATCHING_CONFIG.DROPOFF_CLUSTER_RADIUS_KM,
+            maxDetourRatio: BATCHING_CONFIG.MAX_DETOUR_RATIO,
             detourRatio,
             batchedRouteKm: Math.round(batchedRouteKm * 10) / 10,
             sumDirectKm: Math.round(sumDirectKm * 10) / 10,

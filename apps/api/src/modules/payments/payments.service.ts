@@ -119,11 +119,11 @@ export async function issueRefund(
   const cappedAmountCents = Math.min(amountCents, Math.max(0, payment.amountCents - alreadyRefunded));
   if (cappedAmountCents <= 0) return null; // already fully refunded/discounted — nothing left to give back
 
-  await paymentProvider.refund(payment.stripePaymentIntentId ?? "", cappedAmountCents);
+  const { providerRefundRef } = await paymentProvider.refund(payment.stripePaymentIntentId ?? "", cappedAmountCents);
 
   const [refund] = await tx
     .insert(schema.refunds)
-    .values({ paymentId: payment.id, amountCents: cappedAmountCents, reason, issuedBy })
+    .values({ paymentId: payment.id, amountCents: cappedAmountCents, reason, issuedBy, providerRefundRef })
     .returning();
 
   const newTotalRefunded = alreadyRefunded + cappedAmountCents;
@@ -133,12 +133,10 @@ export async function issueRefund(
   }
 
   await recordAudit(tx, {
-    // audit_logs.actor_id is a real users.id FK — pseudo-actors like
-    // "system:batching" (see batching.service.ts) aren't UUIDs, so they're
-    // recorded as a null actor with the reason/issuedBy captured in `after`
-    // instead. Same normalization orders.service.ts's transitionOrder uses
-    // for "system:"/"driver:" pseudo-actors.
-    actorId: issuedBy.startsWith("system:") ? null : issuedBy,
+    // Pseudo-actors ("system:...", "driver:...") are normalized to a null
+    // actor inside recordAudit itself — the reason/issuedBy is still
+    // captured below in `after`.
+    actorId: issuedBy,
     action: "REFUND_ISSUED",
     entityType: "Payment",
     entityId: payment.id,

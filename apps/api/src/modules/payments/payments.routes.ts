@@ -3,12 +3,11 @@ import { z } from "zod";
 import { requireAuth } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { requireIdempotencyKey, withIdempotency } from "../../lib/idempotency";
+import { FINANCE_ROLES as financeRoles } from "../../lib/roleGroups";
 import * as paymentsService from "./payments.service";
 import * as payoutsService from "./payouts.service";
 
 export async function paymentsRoutes(app: FastifyInstance) {
-  const financeRoles = ["FINANCE", "OPS_MANAGER", "SUPER_ADMIN"] as const;
-
   // GET /v1/admin/payments — closes the "administrators manage payments" gap.
   app.get(
     "/v1/admin/payments",
