@@ -3,7 +3,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
-import { requireIdempotencyKey } from "../../lib/idempotency";
+import { requireIdempotencyKey, withIdempotency } from "../../lib/idempotency";
 import { db, schema } from "../../db";
 import * as custodyService from "./custody.service";
 import { NotFoundError } from "../../lib/errors";
@@ -44,25 +44,27 @@ export async function custodyRoutes(app: FastifyInstance) {
     "/v1/orders/:id/pickup/verify",
     { preHandler: [requireAuth, requireRole("DRIVER")] },
     async (req, reply) => {
-      requireIdempotencyKey(req);
+      const idempotencyKey = requireIdempotencyKey(req);
       const { id } = req.params as { id: string };
       const body = pickupSchema.parse(req.body);
       const driverId = await getDriverId(req.auth!.userId);
 
-      const verification = await custodyService.verifyPickup({
-        orderId: id,
-        driverId,
-        driverLat: body.driverLocation.lat,
-        driverLng: body.driverLocation.lng,
-        pickupLat: body.pickupLocation.lat,
-        pickupLng: body.pickupLocation.lng,
-        driverSelfieRef: body.driverSelfieRef,
-        packagePhotoRefs: body.packagePhotoRefs,
-        senderName: body.senderName,
-        senderSignatureRef: body.senderSignatureRef,
-        pinUsed: body.pinUsed,
-        deviceId: body.deviceId,
-      });
+      const { result: verification } = await withIdempotency(idempotencyKey, () =>
+        custodyService.verifyPickup({
+          orderId: id,
+          driverId,
+          driverLat: body.driverLocation.lat,
+          driverLng: body.driverLocation.lng,
+          pickupLat: body.pickupLocation.lat,
+          pickupLng: body.pickupLocation.lng,
+          driverSelfieRef: body.driverSelfieRef,
+          packagePhotoRefs: body.packagePhotoRefs,
+          senderName: body.senderName,
+          senderSignatureRef: body.senderSignatureRef,
+          pinUsed: body.pinUsed,
+          deviceId: body.deviceId,
+        })
+      );
 
       reply.status(200).send(verification);
     }
@@ -73,27 +75,29 @@ export async function custodyRoutes(app: FastifyInstance) {
     "/v1/orders/:id/delivery/verify",
     { preHandler: [requireAuth, requireRole("DRIVER")] },
     async (req, reply) => {
-      requireIdempotencyKey(req);
+      const idempotencyKey = requireIdempotencyKey(req);
       const { id } = req.params as { id: string };
       const body = deliverySchema.parse(req.body);
       const driverId = await getDriverId(req.auth!.userId);
 
-      const verification = await custodyService.verifyDelivery({
-        orderId: id,
-        driverId,
-        driverLat: body.driverLocation.lat,
-        driverLng: body.driverLocation.lng,
-        dropoffLat: body.dropoffLocation.lat,
-        dropoffLng: body.dropoffLocation.lng,
-        outcome: body.outcome,
-        podPhotoRef: body.podPhotoRef,
-        recipientName: body.recipientName,
-        recipientSignatureRef: body.recipientSignatureRef,
-        pinUsed: body.pinUsed,
-        idVerified: body.idVerified,
-        contactless: body.contactless,
-        failureReason: body.failureReason,
-      });
+      const { result: verification } = await withIdempotency(idempotencyKey, () =>
+        custodyService.verifyDelivery({
+          orderId: id,
+          driverId,
+          driverLat: body.driverLocation.lat,
+          driverLng: body.driverLocation.lng,
+          dropoffLat: body.dropoffLocation.lat,
+          dropoffLng: body.dropoffLocation.lng,
+          outcome: body.outcome,
+          podPhotoRef: body.podPhotoRef,
+          recipientName: body.recipientName,
+          recipientSignatureRef: body.recipientSignatureRef,
+          pinUsed: body.pinUsed,
+          idVerified: body.idVerified,
+          contactless: body.contactless,
+          failureReason: body.failureReason,
+        })
+      );
 
       reply.status(200).send(verification);
     }

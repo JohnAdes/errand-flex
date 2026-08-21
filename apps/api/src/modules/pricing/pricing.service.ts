@@ -2,6 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { db, schema } from "../../db";
 import { env } from "../../env";
 import { ValidationError, NotFoundError, ConflictError } from "../../lib/errors";
+import { haversineMeters } from "../../lib/geo";
 import type { QuoteInput, QuoteCalcResult, PriceLine, PricingRuleDef, PricingRuleType } from "./pricing.types";
 
 /**
@@ -11,19 +12,14 @@ import type { QuoteInput, QuoteCalcResult, PriceLine, PricingRuleDef, PricingRul
  * mapping-provider abstraction (Mapbox/Google/etc.) so the provider can be
  * swapped later (02-architecture.md §4, §9). This starter kit has no mapping
  * API key configured, so it falls back to a straight-line haversine distance
- * with a fixed road-distance fudge factor. Replace `estimateDistanceKm` with
+ * (lib/geo.ts, shared with custody.service.ts's GPS-radius check) with a
+ * fixed road-distance fudge factor on top. Replace `estimateDistanceKm` with
  * a real call to your chosen provider's distance-matrix API before relying on
  * this for real pricing — straight-line distance under-charges on anything
  * that isn't a direct route (rivers, highways, one-way systems, etc).
  */
 export function estimateDistanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-  const straightLineKm = R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+  const straightLineKm = haversineMeters(lat1, lng1, lat2, lng2) / 1000;
   const ROAD_DISTANCE_FUDGE_FACTOR = 1.3;
   return straightLineKm * ROAD_DISTANCE_FUDGE_FACTOR;
 }

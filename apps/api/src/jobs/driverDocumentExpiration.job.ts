@@ -1,6 +1,5 @@
-import { and, eq, lt, ne } from "drizzle-orm";
+import { and, inArray, lt, ne } from "drizzle-orm";
 import { db, schema } from "../db";
-import { recordAudit } from "../lib/audit";
 
 /**
  * Driver-document-expiration sweep (02-architecture.md §7, "daily"). A
@@ -12,21 +11,33 @@ import { recordAudit } from "../lib/audit";
  */
 export async function runDriverDocumentExpirationSweep() {
   const now = new Date();
-  const expiring = await db.query.driverDocuments.findMany({
-    where: and(lt(schema.driverDocuments.expiresAt, now), ne(schema.driverDocuments.status, "EXPIRED")),
-  });
 
-  for (const doc of expiring) {
-    await db.update(schema.driverDocuments).set({ status: "EXPIRED" }).where(eq(schema.driverDocuments.id, doc.id));
-    await recordAudit(db, {
-      actorId: null,
-      action: "DRIVER_DOCUMENT_EXPIRED",
-      entityType: "DriverDocument",
-      entityId: doc.id,
-      before: { status: doc.status },
-      after: { status: "EXPIRED", driverId: doc.driverId },
+  return db.transaction(async (tx) => {
+    const toExpire = await tx.query.driverDocuments.findMany({
+      where: and(lt(schema.driverDocuments.expiresAt, now), ne(schema.driverDocuments.status, "EXPIRED")),
     });
-  }
+    if (toExpire.length === 0) return { expiredCount: 0 };
 
-  return { expiredCount: expiring.length };
+    // Bulk UPDATE + one batched audit insert instead of the previous
+    // per-document UPDATE-then-audit-insert loop — found by review to be an
+    // N+1 pattern (2 queries per document) in a job that sweeps potentially
+    // every driver's documents platform-wide, daily.
+    await tx
+      .update(schema.driverDocuments)
+      .set({ status: "EXPIRED" })
+      .where(inArray(schema.driverDocuments.id, toExpire.map((d) => d.id)));
+
+    await tx.insert(schema.auditLogs).values(
+      toExpire.map((doc) => ({
+        actorId: null,
+        action: "DRIVER_DOCUMENT_EXPIRED",
+        entityType: "DriverDocument",
+        entityId: doc.id,
+        before: { status: doc.status } as any,
+        after: { status: "EXPIRED", driverId: doc.driverId } as any,
+      }))
+    );
+
+    return { expiredCount: toExpire.length };
+  });
 }

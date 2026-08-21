@@ -6,6 +6,7 @@ import { OrderStatus } from "@courier/shared-types";
 import { transitionOrder, transitionOrderThrough } from "../orders/orders.service";
 import { getAcceptedOfferForOrder } from "../dispatch/dispatch.service";
 import { capturePaymentForOrder } from "../payments/payments.service";
+import { haversineMeters } from "../../lib/geo";
 
 /**
  * Object-level authorization: verifying pickup/delivery is a chain-of-custody
@@ -23,16 +24,6 @@ async function assertDriverAssignedToOrder(orderId: string, driverId: string) {
 }
 
 const DEFAULT_GPS_RADIUS_METERS = 150;
-
-function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-}
 
 /**
  * Media upload note: `driverSelfieRef` / `packagePhotoRefs` / `podPhotoRef`
@@ -89,7 +80,7 @@ export async function verifyPickup(input: PickupVerifyInput) {
   }
 
   return db.transaction(async (tx) => {
-    await transitionOrderThrough(order.id, OrderStatus.PICKUP_VERIFICATION_IN_PROGRESS, `driver:${input.driverId}`, {});
+    await transitionOrderThrough(order.id, OrderStatus.PICKUP_VERIFICATION_IN_PROGRESS, `driver:${input.driverId}`, {}, tx);
 
     const [verification] = await tx
       .insert(schema.pickupVerifications)
@@ -124,7 +115,12 @@ export async function verifyPickup(input: PickupVerifyInput) {
       after: { driverId: input.driverId },
     });
 
-    await tx.update(schema.orders).set({ status: "PICKED_UP" }).where(eq(schema.orders.id, order.id));
+    // Final status write goes through transitionOrder (not a direct update)
+    // — found by review: the previous direct `tx.update` bypassed the ONLY
+    // function allowed to change order status, so this transition skipped
+    // ORDER_STATUS_TRANSITIONS validation and wrote no ORDER_STATUS_* audit
+    // entry, unlike every other status change in the system.
+    await transitionOrder(order.id, OrderStatus.PICKED_UP, `driver:${input.driverId}`, {}, tx);
 
     return verification;
   });
@@ -179,7 +175,13 @@ export async function verifyDelivery(input: DeliveryVerifyInput) {
   }
 
   return db.transaction(async (tx) => {
-    await transitionOrderThrough(order.id, OrderStatus.DELIVERY_VERIFICATION_IN_PROGRESS, `driver:${input.driverId}`, {});
+    await transitionOrderThrough(
+      order.id,
+      OrderStatus.DELIVERY_VERIFICATION_IN_PROGRESS,
+      `driver:${input.driverId}`,
+      {},
+      tx
+    );
 
     const [verification] = await tx
       .insert(schema.deliveryVerifications)
@@ -207,8 +209,11 @@ export async function verifyDelivery(input: DeliveryVerifyInput) {
       });
     }
 
-    const finalStatus = input.outcome === "DELIVERED" ? "DELIVERED" : "DELIVERY_FAILED";
-    await tx.update(schema.orders).set({ status: finalStatus }).where(eq(schema.orders.id, order.id));
+    // Final status write goes through transitionOrder (not a direct update)
+    // — same fix as verifyPickup above: keeps this on the state machine's
+    // validated path and its audit trail.
+    const finalStatus = input.outcome === "DELIVERED" ? OrderStatus.DELIVERED : OrderStatus.DELIVERY_FAILED;
+    await transitionOrder(order.id, finalStatus, `driver:${input.driverId}`, {}, tx);
 
     // Releases the driver's capacity slot regardless of outcome — a FAILED
     // delivery still ends the order's active life just as much as a
@@ -229,10 +234,27 @@ export async function verifyDelivery(input: DeliveryVerifyInput) {
       await capturePaymentForOrder(tx, order.id);
       const acceptedOffer = await getAcceptedOfferForOrder(tx, order.id);
       if (acceptedOffer) {
+        // A batch offer's payoutCents is one flat amount for the WHOLE
+        // batch (see dispatch.service.ts's createBatchOfferRound), but this
+        // runs once per order as each one is individually delivered — found
+        // by review to previously credit the full batch payout on every
+        // order, tripling+ the driver's actual earnings on a multi-order
+        // batch. Split it evenly across the batch's orders; a remainder of
+        // up to (orderCount - 1) cents from the division is left
+        // undistributed rather than building a more precise per-order
+        // ledger, which is out of scope for this fix.
+        let amountCents = acceptedOffer.payoutCents;
+        if (acceptedOffer.routeBatchId) {
+          const [{ count }] = await tx
+            .select({ count: sql<number>`count(*)::int` })
+            .from(schema.routeAssignments)
+            .where(eq(schema.routeAssignments.routeBatchId, acceptedOffer.routeBatchId));
+          amountCents = Math.floor(acceptedOffer.payoutCents / Math.max(count, 1));
+        }
         await tx.insert(schema.driverEarnings).values({
           driverId: acceptedOffer.driverId,
           orderId: order.id,
-          amountCents: acceptedOffer.payoutCents,
+          amountCents,
           type: "DELIVERY_PAYOUT",
           status: "PENDING",
         });

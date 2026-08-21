@@ -3,7 +3,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
-import { requireIdempotencyKey } from "../../lib/idempotency";
+import { requireIdempotencyKey, withIdempotency } from "../../lib/idempotency";
 import { db, schema } from "../../db";
 import * as dispatchService from "./dispatch.service";
 import * as batchingService from "./batching.service";
@@ -117,10 +117,10 @@ export async function dispatchRoutes(app: FastifyInstance) {
     "/v1/driver-offers/:id/accept",
     { preHandler: [requireAuth, requireRole("DRIVER")], config: { rateLimit: { max: 50, timeWindow: "1 minute" } } },
     async (req, reply) => {
-      requireIdempotencyKey(req);
+      const idempotencyKey = requireIdempotencyKey(req);
       const { id } = req.params as { id: string };
       const driverId = await getDriverId(req.auth!.userId);
-      const offer = await dispatchService.acceptOffer(id, driverId);
+      const { result: offer } = await withIdempotency(idempotencyKey, () => dispatchService.acceptOffer(id, driverId));
       reply.status(200).send(offer);
     }
   );

@@ -1,23 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
 import { requireAuth } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
-import { db, schema } from "../../db";
-import { NotFoundError } from "../../lib/errors";
+import { getDriverId, getCustomerProfileId, assertOrderAccess } from "../../lib/orderAccess";
 import * as ratingsService from "./ratings.service";
-
-async function getDriverId(userId: string) {
-  const driver = await db.query.drivers.findFirst({ where: eq(schema.drivers.userId, userId) });
-  if (!driver) throw new NotFoundError("Driver", userId);
-  return driver.id;
-}
-
-async function getCustomerProfileId(userId: string) {
-  const profile = await db.query.customerProfiles.findFirst({ where: eq(schema.customerProfiles.userId, userId) });
-  if (!profile) throw new NotFoundError("CustomerProfile", userId);
-  return profile.id;
-}
 
 const submitRatingSchema = z.object({
   value: z.number().int().min(1).max(5),
@@ -48,9 +34,12 @@ export async function ratingsRoutes(app: FastifyInstance) {
     }
   );
 
-  // GET /v1/orders/:id/ratings
+  // GET /v1/orders/:id/ratings — had zero object-level authorization
+  // (any authenticated user of any role could read any order's ratings);
+  // now uses the same per-role check as tracking/claims (lib/orderAccess.ts).
   app.get("/v1/orders/:id/ratings", { preHandler: [requireAuth] }, async (req) => {
     const { id } = req.params as { id: string };
+    await assertOrderAccess(req, id);
     return ratingsService.listRatingsForOrder(id);
   });
 }

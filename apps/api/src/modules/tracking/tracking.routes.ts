@@ -1,23 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
 import { requireAuth } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
-import { db, schema } from "../../db";
-import { NotFoundError } from "../../lib/errors";
+import { getDriverId, assertOrderAccess } from "../../lib/orderAccess";
 import * as trackingService from "./tracking.service";
-
-async function getDriverId(userId: string) {
-  const driver = await db.query.drivers.findFirst({ where: eq(schema.drivers.userId, userId) });
-  if (!driver) throw new NotFoundError("Driver", userId);
-  return driver.id;
-}
-
-async function getCustomerProfileId(userId: string) {
-  const profile = await db.query.customerProfiles.findFirst({ where: eq(schema.customerProfiles.userId, userId) });
-  if (!profile) throw new NotFoundError("CustomerProfile", userId);
-  return profile.id;
-}
 
 export async function trackingRoutes(app: FastifyInstance) {
   // POST /v1/drivers/me/location — what a real driver app's background
@@ -37,12 +23,12 @@ export async function trackingRoutes(app: FastifyInstance) {
   );
 
   // GET /v1/orders/:id/tracking — customer-facing "where is my order" view.
+  // Object-level authorization per role (see lib/orderAccess.ts) — this used
+  // to only restrict CUSTOMER, so any DRIVER (or other role) could view any
+  // order's live location, the same IDOR class fixed on GET /v1/orders/:id.
   app.get("/v1/orders/:id/tracking", { preHandler: [requireAuth] }, async (req) => {
     const { id } = req.params as { id: string };
-    if (req.auth!.role === "CUSTOMER") {
-      const customerProfileId = await getCustomerProfileId(req.auth!.userId);
-      return trackingService.getOrderTracking(id, customerProfileId);
-    }
+    await assertOrderAccess(req, id);
     return trackingService.getOrderTracking(id);
   });
 }

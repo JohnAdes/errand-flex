@@ -1,23 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
 import { requireAuth } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
-import { db, schema } from "../../db";
-import { NotFoundError, ForbiddenError } from "../../lib/errors";
+import { getDriverId, getCustomerProfileId, assertOrderAccess } from "../../lib/orderAccess";
 import * as claimsService from "./claims.service";
-
-async function getDriverId(userId: string) {
-  const driver = await db.query.drivers.findFirst({ where: eq(schema.drivers.userId, userId) });
-  if (!driver) throw new NotFoundError("Driver", userId);
-  return driver.id;
-}
-
-async function getCustomerProfileId(userId: string) {
-  const profile = await db.query.customerProfiles.findFirst({ where: eq(schema.customerProfiles.userId, userId) });
-  if (!profile) throw new NotFoundError("CustomerProfile", userId);
-  return profile.id;
-}
 
 const createClaimSchema = z.object({
   type: z.enum(["DAMAGED", "LOST", "LATE", "WRONG_ITEM", "BILLING", "OTHER"]),
@@ -49,14 +35,12 @@ export async function claimsRoutes(app: FastifyInstance) {
   );
 
   // GET /v1/orders/:id/claims — owner (customer/driver) or dispatch staff.
+  // Object-level authorization per role (see lib/orderAccess.ts) — this used
+  // to only restrict CUSTOMER, so any DRIVER could read any order's claim
+  // details, the same IDOR class fixed on GET /v1/orders/:id.
   app.get("/v1/orders/:id/claims", { preHandler: [requireAuth] }, async (req) => {
     const { id } = req.params as { id: string };
-    if (req.auth!.role === "CUSTOMER") {
-      const order = await db.query.orders.findFirst({ where: eq(schema.orders.id, id) });
-      if (!order) throw new NotFoundError("Order", id);
-      const customerProfileId = await getCustomerProfileId(req.auth!.userId);
-      if (order.customerProfileId !== customerProfileId) throw new ForbiddenError("You do not have access to this order");
-    }
+    await assertOrderAccess(req, id);
     return claimsService.listClaimsForOrder(id);
   });
 

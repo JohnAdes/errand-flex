@@ -3,7 +3,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
-import { requireIdempotencyKey, getCachedResult, cacheResult } from "../../lib/idempotency";
+import { requireIdempotencyKey, withIdempotency } from "../../lib/idempotency";
 import { db, schema } from "../../db";
 import * as ordersService from "./orders.service";
 import * as paymentsService from "../payments/payments.service";
@@ -60,29 +60,24 @@ export async function orderRoutes(app: FastifyInstance) {
   // POST /v1/orders — idempotency-key required per API spec (02-architecture.md §6)
   app.post("/v1/orders", { preHandler: [requireAuth, requireRole("CUSTOMER")] }, async (req, reply) => {
     const idempotencyKey = requireIdempotencyKey(req);
-    const cached = getCachedResult(idempotencyKey);
-    if (cached) {
-      reply.status(200).send(cached);
-      return;
-    }
-
     const body = createOrderSchema.parse(req.body);
     const customerProfileId = await getCustomerProfileId(req.auth!.userId);
 
-    const order = await ordersService.createOrder({
-      actorUserId: req.auth!.userId,
-      customerProfileId,
-      quoteId: body.quoteId,
-      serviceLevel: body.serviceLevel,
-      pickup: body.pickup,
-      dropoff: body.dropoff,
-      packages: body.packages,
-      deliveryInstructions: body.deliveryInstructions,
-      contactlessDelivery: body.contactlessDelivery,
-    });
+    const { result: order, replayed } = await withIdempotency(idempotencyKey, () =>
+      ordersService.createOrder({
+        actorUserId: req.auth!.userId,
+        customerProfileId,
+        quoteId: body.quoteId,
+        serviceLevel: body.serviceLevel,
+        pickup: body.pickup,
+        dropoff: body.dropoff,
+        packages: body.packages,
+        deliveryInstructions: body.deliveryInstructions,
+        contactlessDelivery: body.contactlessDelivery,
+      })
+    );
 
-    cacheResult(idempotencyKey, order);
-    reply.status(201).send(order);
+    reply.status(replayed ? 200 : 201).send(order);
   });
 
   // POST /v1/orders/:id/pay — authorizes payment (via the pluggable
@@ -94,15 +89,11 @@ export async function orderRoutes(app: FastifyInstance) {
     { preHandler: [requireAuth, requireRole("CUSTOMER")] },
     async (req, reply) => {
       const idempotencyKey = requireIdempotencyKey(req);
-      const cached = getCachedResult(idempotencyKey);
-      if (cached) {
-        reply.status(200).send(cached);
-        return;
-      }
       const { id } = req.params as { id: string };
-      const payment = await paymentsService.authorizePayment(id, req.auth!.userId);
-      cacheResult(idempotencyKey, payment);
-      reply.status(201).send(payment);
+      const { result: payment, replayed } = await withIdempotency(idempotencyKey, () =>
+        paymentsService.authorizePayment(id, req.auth!.userId)
+      );
+      reply.status(replayed ? 200 : 201).send(payment);
     }
   );
 
@@ -142,10 +133,12 @@ export async function orderRoutes(app: FastifyInstance) {
     "/v1/orders/:id/cancel",
     { preHandler: [requireAuth, requireRole("CUSTOMER", "DISPATCHER", "OPS_MANAGER", "SUPER_ADMIN")] },
     async (req, reply) => {
-      requireIdempotencyKey(req);
+      const idempotencyKey = requireIdempotencyKey(req);
       const { id } = req.params as { id: string };
       const requesterCustomerProfileId = req.auth!.role === "CUSTOMER" ? await getCustomerProfileId(req.auth!.userId) : undefined;
-      const order = await ordersService.cancelOrder(id, req.auth!.userId, requesterCustomerProfileId);
+      const { result: order } = await withIdempotency(idempotencyKey, () =>
+        ordersService.cancelOrder(id, req.auth!.userId, requesterCustomerProfileId)
+      );
       reply.status(200).send(order);
     }
   );

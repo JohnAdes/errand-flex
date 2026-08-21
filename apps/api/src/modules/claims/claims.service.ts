@@ -4,6 +4,8 @@ import { ForbiddenError, NotFoundError, ValidationError } from "../../lib/errors
 import { recordAudit } from "../../lib/audit";
 import { getAcceptedOfferForOrder } from "../dispatch/dispatch.service";
 import { issueRefund } from "../payments/payments.service";
+import { transitionOrderThrough } from "../orders/orders.service";
+import { OrderStatus } from "@courier/shared-types";
 
 const CLAIM_TYPES = ["DAMAGED", "LOST", "LATE", "WRONG_ITEM", "BILLING", "OTHER"] as const;
 export type ClaimType = (typeof CLAIM_TYPES)[number];
@@ -100,6 +102,15 @@ export async function resolveClaim(
     if (refundCents && refundCents > 0) {
       if (outcome !== "RESOLVED") throw new ValidationError("Refunds may only be issued when upholding (RESOLVED) a claim");
       await issueRefund(tx, claim.orderId, refundCents, `Claim resolution: ${resolution}`, actorUserId);
+      // ORDER_STATUS_TRANSITIONS models DELIVERED -> DISPUTED -> REFUNDED
+      // for exactly this case — found by review to be unused: resolving a
+      // claim with a refund moved the payment to REFUNDED but left the
+      // order's own status at DELIVERED forever, so any report/KPI that
+      // sums totalCents for status=DELIVERED orders silently counted
+      // fully-refunded revenue as real. Only done when an actual refund is
+      // issued — REJECTED or a no-refund RESOLVED claim leaves the order's
+      // status alone, since DISPUTED/REFUNDED has no path back to DELIVERED.
+      await transitionOrderThrough(claim.orderId, OrderStatus.REFUNDED, actorUserId, { claimId: id, refundCents }, tx);
     }
 
     const [updated] = await tx

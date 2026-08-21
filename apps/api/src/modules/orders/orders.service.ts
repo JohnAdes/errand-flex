@@ -1,8 +1,11 @@
 import { eq } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { db, schema } from "../../db";
 import { NotFoundError, ValidationError, ForbiddenError } from "../../lib/errors";
 import { recordAudit } from "../../lib/audit";
 import { ORDER_STATUS_TRANSITIONS, OrderStatus } from "@courier/shared-types";
+
+type DbOrTx = NodePgDatabase<typeof schema>;
 
 interface CreateOrderInput {
   actorUserId: string;
@@ -208,46 +211,67 @@ export async function cancelOrder(orderId: string, actorUserId: string, requeste
   return transitionOrder(orderId, OrderStatus.CANCELED, actorUserId, { reason: "Customer cancellation" });
 }
 
-/**
- * Server-authoritative state machine transition. This is the ONLY function in
- * the codebase allowed to change an order's status — every route handler
- * that changes order state must go through this so the transition map is
- * enforced everywhere (01-product-specification.md §8).
- */
-export async function transitionOrder(
+async function doTransitionOrder(
+  tx: DbOrTx,
   orderId: string,
   toStatus: OrderStatus,
   actorId: string,
   meta: Record<string, unknown>
 ) {
-  return db.transaction(async (tx) => {
-    const order = await tx.query.orders.findFirst({ where: eq(schema.orders.id, orderId) });
-    if (!order) throw new NotFoundError("Order", orderId);
+  const order = await tx.query.orders.findFirst({ where: eq(schema.orders.id, orderId) });
+  if (!order) throw new NotFoundError("Order", orderId);
 
-    const allowedNext = ORDER_STATUS_TRANSITIONS[order.status as OrderStatus] ?? [];
-    if (!allowedNext.includes(toStatus)) {
-      throw new ValidationError(
-        `Invalid transition: ${order.status} -> ${toStatus}. Allowed: ${allowedNext.join(", ") || "(none — terminal state)"}`
-      );
-    }
+  const allowedNext = ORDER_STATUS_TRANSITIONS[order.status as OrderStatus] ?? [];
+  if (!allowedNext.includes(toStatus)) {
+    throw new ValidationError(
+      `Invalid transition: ${order.status} -> ${toStatus}. Allowed: ${allowedNext.join(", ") || "(none — terminal state)"}`
+    );
+  }
 
-    const [updated] = await tx
-      .update(schema.orders)
-      .set({ status: toStatus as any, updatedAt: new Date() })
-      .where(eq(schema.orders.id, orderId))
-      .returning();
+  const [updated] = await tx
+    .update(schema.orders)
+    .set({ status: toStatus as any, updatedAt: new Date() })
+    .where(eq(schema.orders.id, orderId))
+    .returning();
 
-    await recordAudit(tx, {
-      actorId: actorId.startsWith("system:") || actorId.startsWith("driver:") ? null : actorId,
-      action: `ORDER_STATUS_${toStatus}`,
-      entityType: "Order",
-      entityId: orderId,
-      before: { status: order.status },
-      after: { status: toStatus, meta },
-    });
-
-    return updated;
+  await recordAudit(tx, {
+    actorId: actorId.startsWith("system:") || actorId.startsWith("driver:") ? null : actorId,
+    action: `ORDER_STATUS_${toStatus}`,
+    entityType: "Order",
+    entityId: orderId,
+    before: { status: order.status },
+    after: { status: toStatus, meta },
   });
+
+  return updated;
+}
+
+/**
+ * Server-authoritative state machine transition. This is the ONLY function in
+ * the codebase allowed to change an order's status — every route handler
+ * that changes order state must go through this so the transition map is
+ * enforced everywhere (01-product-specification.md §8).
+ *
+ * Accepts an optional outer transaction handle (`tx`) so a caller that's
+ * already inside its own `db.transaction` — e.g. custody.service.ts's
+ * pickup/delivery verification — can pass it through and have the status
+ * change commit or roll back atomically with the rest of that transaction.
+ * Found by review to previously always open its own independent transaction
+ * regardless of caller context: a later failure in the outer transaction
+ * would roll back, but this function's own transaction had already
+ * committed, leaving the order stuck mid-transition with a committed audit
+ * entry claiming a change that didn't actually complete. When no `tx` is
+ * passed, this still wraps itself in its own transaction as before.
+ */
+export async function transitionOrder(
+  orderId: string,
+  toStatus: OrderStatus,
+  actorId: string,
+  meta: Record<string, unknown>,
+  tx?: DbOrTx
+) {
+  if (tx) return doTransitionOrder(tx, orderId, toStatus, actorId, meta);
+  return db.transaction((innerTx) => doTransitionOrder(innerTx, orderId, toStatus, actorId, meta));
 }
 
 /**
@@ -276,9 +300,11 @@ export async function transitionOrderThrough(
   orderId: string,
   toStatus: OrderStatus,
   actorId: string,
-  meta: Record<string, unknown>
+  meta: Record<string, unknown>,
+  tx?: DbOrTx
 ) {
-  const order = await db.query.orders.findFirst({ where: eq(schema.orders.id, orderId) });
+  const dbOrTx = tx ?? db;
+  const order = await dbOrTx.query.orders.findFirst({ where: eq(schema.orders.id, orderId) });
   if (!order) throw new NotFoundError("Order", orderId);
 
   const fromStatus = order.status as OrderStatus;
@@ -291,7 +317,7 @@ export async function transitionOrderThrough(
 
   let current: Awaited<ReturnType<typeof transitionOrder>> = order as any;
   for (const step of path) {
-    current = await transitionOrder(orderId, step, actorId, meta);
+    current = await transitionOrder(orderId, step, actorId, meta, tx);
   }
   return current;
 }

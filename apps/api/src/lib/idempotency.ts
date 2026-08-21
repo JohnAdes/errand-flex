@@ -9,7 +9,11 @@ import { ValidationError } from "./errors";
  * spec, §7) or a Redis SETNX before relying on this in production, since an
  * in-memory map does not survive a restart or work across multiple instances.
  */
-const seenKeys = new Map<string, { result: unknown; expiresAt: number }>();
+type CacheEntry =
+  | { status: "pending"; promise: Promise<unknown> }
+  | { status: "done"; result: unknown; expiresAt: number };
+
+const seenKeys = new Map<string, CacheEntry>();
 const TTL_MS = 24 * 60 * 60 * 1000;
 
 export function requireIdempotencyKey(req: FastifyRequest): string {
@@ -20,16 +24,39 @@ export function requireIdempotencyKey(req: FastifyRequest): string {
   return key;
 }
 
-export function getCachedResult(key: string): unknown | undefined {
-  const entry = seenKeys.get(key);
-  if (!entry) return undefined;
-  if (entry.expiresAt < Date.now()) {
+/**
+ * Runs `fn` at most once per idempotency key; concurrent callers with the
+ * same key await the same in-flight execution and get its result rather than
+ * re-running `fn` themselves. Found by review to previously be a separate
+ * getCachedResult/cacheResult read-then-write: two concurrent requests with
+ * the same key could both miss the cache before either wrote to it, letting
+ * e.g. a payment get authorized twice. This is race-safe because the
+ * check-and-claim below (`get` then `set`) has no `await` between them, so
+ * no other async task can interleave on Node's single-threaded event loop.
+ */
+export async function withIdempotency<T>(
+  key: string,
+  fn: () => Promise<T>
+): Promise<{ result: T; replayed: boolean }> {
+  const existing = seenKeys.get(key);
+  if (existing) {
+    if (existing.status === "pending") {
+      return { result: (await existing.promise) as T, replayed: true };
+    }
+    if (existing.expiresAt >= Date.now()) {
+      return { result: existing.result as T, replayed: true };
+    }
     seenKeys.delete(key);
-    return undefined;
   }
-  return entry.result;
-}
 
-export function cacheResult(key: string, result: unknown) {
-  seenKeys.set(key, { result, expiresAt: Date.now() + TTL_MS });
+  const promise = fn();
+  seenKeys.set(key, { status: "pending", promise });
+  try {
+    const result = await promise;
+    seenKeys.set(key, { status: "done", result, expiresAt: Date.now() + TTL_MS });
+    return { result, replayed: false };
+  } catch (err) {
+    seenKeys.delete(key);
+    throw err;
+  }
 }

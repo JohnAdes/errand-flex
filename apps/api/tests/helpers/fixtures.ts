@@ -141,6 +141,9 @@ export async function cleanupTestData(ids: {
     await db.delete(schema.driverEarnings).where(inArray(schema.driverEarnings.orderId, orderIds));
     await db.delete(schema.routeAssignments).where(inArray(schema.routeAssignments.orderId, orderIds));
     await db.delete(schema.driverOffers).where(inArray(schema.driverOffers.orderId, orderIds));
+    await db.delete(schema.chainOfCustodyEvents).where(inArray(schema.chainOfCustodyEvents.orderId, orderIds));
+    await db.delete(schema.pickupVerifications).where(inArray(schema.pickupVerifications.orderId, orderIds));
+    await db.delete(schema.deliveryVerifications).where(inArray(schema.deliveryVerifications.orderId, orderIds));
     await db.delete(schema.stops).where(inArray(schema.stops.orderId, orderIds));
     await db.delete(schema.packages).where(inArray(schema.packages.orderId, orderIds));
     await db.delete(schema.orders).where(inArray(schema.orders.id, orderIds));

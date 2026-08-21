@@ -118,6 +118,21 @@ export async function createOfferRound(orderId: string, payoutCents: number) {
     throw new ValidationError(`Order must be SEARCHING_FOR_DRIVER to offer it, got ${order.status}`);
   }
 
+  // Found by review: an order can be SEARCHING_FOR_DRIVER while already
+  // committed to a SUGGESTED/APPROVED route batch (batching.service.ts
+  // never changes order status when it groups orders) — offering it
+  // individually here as well let it end up with two competing offers, and
+  // batch-offering it later threw mid-loop on the already-DRIVER_OFFERED
+  // order, leaving the batch stuck OFFERED with a live orphaned offer.
+  const existingAssignment = await db.query.routeAssignments.findFirst({
+    where: eq(schema.routeAssignments.orderId, orderId),
+  });
+  if (existingAssignment) {
+    throw new ConflictError(
+      "This order is part of a route batch — offer the batch instead of the order individually"
+    );
+  }
+
   const candidates = await findCandidateDrivers();
   if (candidates.length === 0) {
     throw new ConflictError("No available drivers found — order remains in SEARCHING_FOR_DRIVER");
