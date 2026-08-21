@@ -1,4 +1,4 @@
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db, schema } from "../../db";
 import { ConflictError, NotFoundError } from "../../lib/errors";
 import { recordAudit } from "../../lib/audit";
@@ -18,9 +18,15 @@ export async function runPayoutBatch(driverId: string, periodStart: Date, period
     // Atomic claim (conditional UPDATE, not the previous read-then-write) —
     // found by review to be a double-payout race: the weekly scheduled job
     // and an admin's one-off call could both read the same PENDING earnings
-    // before either committed. Only filters on periodEnd (an upper bound —
-    // don't include earnings created after the window); periodStart is not
-    // used to exclude rows, so earnings still PENDING from an earlier failed
+    // before either committed. The upper bound is the database's own now()
+    // rather than the caller-supplied `periodEnd` (a Date built from the app
+    // server's clock) — comparing an app-clock timestamp against a
+    // DB-clock-assigned `createdAt` is a real hazard under any clock skew
+    // between the app and DB hosts (found the hard way: it intermittently
+    // excluded an earning inserted moments earlier in CI, where the app and
+    // Postgres run as separate containers). `periodEnd` is still stored on
+    // the payout row as the requested label. `periodStart` is not used to
+    // exclude rows at all, so earnings still PENDING from an earlier failed
     // run aren't left permanently stranded — the payout's periodStart is
     // widened below instead, to honestly reflect what was actually included.
     const claimed = await tx
@@ -30,7 +36,7 @@ export async function runPayoutBatch(driverId: string, periodStart: Date, period
         and(
           eq(schema.driverEarnings.driverId, driverId),
           eq(schema.driverEarnings.status, "PENDING"),
-          lte(schema.driverEarnings.createdAt, periodEnd)
+          sql`${schema.driverEarnings.createdAt} <= now()`
         )
       )
       .returning();
