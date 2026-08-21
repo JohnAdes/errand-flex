@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "Courier Driver",
+    "slug": "courier-driver-app",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": ["**/*"],
+    "ios": { "supportsTablet": false, "bundleIdentifier": "com.courier.driver" },
+    "android": { "package": "com.courier.driver" },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Courier needs your location to confirm you're at the pickup/delivery point and to share your live position with dispatch during an active delivery.",
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ],
+      [
+        "expo-camera",
+        { "cameraPermission": "Courier needs your camera to capture the required live pickup selfie and package photos." }
+      ]
+    ]
+  }
+}

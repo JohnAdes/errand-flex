@@ -1,0 +1,22 @@
+{
+  "name": "courier-marketplace",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/admin",
+    "packages/shared-types"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w apps/api",
+    "dev:admin": "npm run dev -w apps/admin",
+    "build:api": "npm run build -w apps/api",
+    "build:admin": "npm run build -w apps/admin",
+    "test:api": "npm run test -w apps/api",
+    "db:migrate": "npm run db:migrate -w apps/api",
+    "db:seed": "npm run db:seed -w apps/api",
+    "db:studio": "npm run db:studio -w apps/api"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

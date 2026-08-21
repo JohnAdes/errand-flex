@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: courier
+          POSTGRES_PASSWORD: courier
+          POSTGRES_DB: courier_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://courier:courier@localhost:5432/courier_dev
+      JWT_SECRET: ci-test-secret-not-for-production-use
+      NODE_ENV: test
+      PGPASSWORD: courier
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm install
+
+      # Applied directly with psql rather than `drizzle-kit migrate` — see the
+      # Drizzle architecture note in README.md: drizzle-kit's own CLI proved
+      # unreliable in at least one real environment during development, so
+      # these pre-generated SQL files (apps/api/drizzle/) are the source of
+      # truth and are meant to be portable across any way of applying them.
+      - name: Apply database migrations
+        run: |
+          for f in apps/api/drizzle/*.sql; do
+            echo "Applying $f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Typecheck & build API
+        run: npm run build:api
+
+      - name: Typecheck & build admin portal
+        run: npm run build:admin
+
+      # Includes tests/dispatch.concurrency.test.ts — the single most
+      # important correctness property in the system (exactly one driver can
+      # accept a given offer under concurrent load). It needs a reachable
+      # DATABASE_URL to run for real rather than skip; the postgres service
+      # above provides that.
+      - name: Run API tests
+        run: npm run test:api

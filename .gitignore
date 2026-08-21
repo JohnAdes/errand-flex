@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+.next/
+.expo/
+*.log
+.env
+.env.local
+coverage/
+.DS_Store
+generated/
+*.rdb

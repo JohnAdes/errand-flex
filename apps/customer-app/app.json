@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "Courier Customer",
+    "slug": "courier-customer-app",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": ["**/*"],
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.courier.customer" },
+    "android": { "package": "com.courier.customer" },
+    "plugins": [
+      [
+        "expo-location",
+        { "locationAlwaysAndWhenInUsePermission": "Allow Courier to use your location to set pickup/dropoff points." }
+      ],
+      ["expo-camera", { "cameraPermission": "Allow Courier to use your camera to photograph packages." }]
+    ]
+  }
+}
